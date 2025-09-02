@@ -1,0 +1,28 @@
+[tool.poetry]
+name = "qgi-pipeline-a-indicator-extractor"
+version = "0.1.0"
+description = ""
+authors = ["Amin Al-Ait <aminalait.de@gmail.com>"]
+readme = "README.md"
+package-mode = false
+packages = [{include = "qgi_pipeline_a_indicator_extractor", from = "src"}]
+
+[tool.poetry.dependencies]
+python = "^3.12"
+pandas = {extras = ["pyarrow", "s3"], version = "^2.3.2"}
+pyyaml = "^6.0.2"
+wbgapi = "^1.0.12"
+
+
+[tool.poetry.group.dev.dependencies]
+python-dotenv = "^1.1.1"
+moto = "^5.1.11"
+pytest = "^8.4.1"
+pytest-mock = "^3.14.1"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]

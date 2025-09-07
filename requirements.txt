@@ -1,0 +1,8 @@
+pandas
+numpy
+scipy
+PyYAML
+boto3
+pyarrow
+fastparquet
+brotli

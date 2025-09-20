@@ -1,26 +1,45 @@
 """
-SDCI Finder for AWS Batch
+SDCI Finder for AWS Batch (Optimized Version)
 
-This script runs as a single job in AWS Batch. It processes one indicator,
-which is specified by an environment variable. It reads the indicator data
-from S3, performs the correlation analysis, and saves the results back to S3.
+This script represents a highly optimized version of the SDCI finder, designed
+for massively parallel execution on AWS Batch.
+
+Key Optimizations Implemented:
+1.  **Fine-Grained Jobs:** Each job processes exactly one main country ('Country A'),
+    specified by the COUNTRY_A_NAME environment variable.
+2.  **Intra-Job Parallelism:** Uses a ProcessPoolExecutor to parallelize the
+    comparison of 'Country A' against all other countries ('Country B') across
+    all available vCPUs on the instance.
+3.  **FFT-Based Algorithm:** Replaces the O(n^4) brute-force correlation search
+    with a vastly more performant algorithm based on scipy's FFT cross-correlation.
+4.  **Resilient Checkpointing:** Each parallel task checkpoints its individual result
+    (e.g., the result of A vs. B) to a temporary S3 location. If the spot instance
+    is terminated, a resumed job will skip already completed pairs, saving hours
+    of computation.
+5.  **Final Consolidation:** After all parallel tasks are complete, the job
+    consolidates all temporary partial results into a single final output file
+    and cleans up the temporary directory.
 """
 
 import os
 import logging
 from dataclasses import dataclass
-from typing import List
+from typing import List, Dict, Any, Tuple
 from io import BytesIO
+from concurrent.futures import ProcessPoolExecutor, as_completed
+
 import boto3
 import pandas as pd
 import numpy as np
-from scipy.stats import pearsonr
+from scipy import signal
+import psutil # For getting CPU count
 
-
+# --- Environment Variables ---
 S3_BUCKET = os.environ.get('S3_BUCKET')
-S3_INPUT_PREFIX = os.environ.get('S3_INPUT_PREFIX') # e.g., 'pipeline-A-indicator-extractor/output/csv'
-S3_OUTPUT_PREFIX = os.environ.get('S3_OUTPUT_PREFIX') # e.g., 'pipeline-B-scdi-finder/output'
-INDICATOR_ID = os.environ.get('INDICATOR_ID') # The specific indicator this job will process
+S3_INPUT_PREFIX = os.environ.get('S3_INPUT_PREFIX')
+S3_OUTPUT_PREFIX = os.environ.get('S3_OUTPUT_PREFIX')
+INDICATOR_ID = os.environ.get('INDICATOR_ID')
+COUNTRY_A_NAME = os.environ.get('COUNTRY_A_NAME') # NEW: Specific country for this job
 MIN_LENGTH = int(os.environ.get('MIN_LENGTH', 3))
 CORRELATION_THRESHOLD = float(os.environ.get('CORRELATION_THRESHOLD', 0.5))
 
@@ -40,41 +59,200 @@ class SDCI:
 
 def run_pipeline():
     """Main execution function for the job."""
-    if not all([S3_BUCKET, S3_INPUT_PREFIX, S3_OUTPUT_PREFIX, INDICATOR_ID]):
+    if not all([S3_BUCKET, S3_INPUT_PREFIX, S3_OUTPUT_PREFIX, INDICATOR_ID, COUNTRY_A_NAME]):
         logging.error("Missing critical environment variables.")
-        raise ValueError("Missing critical environment variables.")
+        raise ValueError("Missing critical environment variables: S3_BUCKET, S3_INPUT_PREFIX, S3_OUTPUT_PREFIX, INDICATOR_ID, COUNTRY_A_NAME")
 
-    logging.info(f"--- Starting SDCI Finder Job for Indicator: {INDICATOR_ID} ---")
+    logging.info(f"--- Starting OPTIMIZED SDCI Finder Job for Indicator: {INDICATOR_ID}, Country: {COUNTRY_A_NAME} ---")
 
     # 1. Load data from S3
     indicator_df, countries_df = load_data()
     country_name_to_id = {row["name_1"]: row["id"] for _, row in countries_df.iterrows()}
-    
+
     # 2. Preprocess data
     countries = indicator_df["country"].unique()
     preprocessed_data = preprocess_data(indicator_df, countries)
     logging.info(f"Successfully preprocessed data for {len(preprocessed_data)} countries.")
 
-    # 3. Find and save SDCIs
-    find_and_save_sdcis(preprocessed_data, country_name_to_id)
-    
-    logging.info(f"--- Job for Indicator {INDICATOR_ID} completed successfully. ---")
+    # 3. Find and save SDCIs using the new parallel, checkpointing method
+    find_and_save_sdcis_parallel(preprocessed_data, country_name_to_id)
 
-def load_data() -> (pd.DataFrame, pd.DataFrame):
+    logging.info(f"--- Job for Indicator {INDICATOR_ID}, Country {COUNTRY_A_NAME} completed successfully. ---")
+
+
+def find_sdcis_with_fft(
+    country_a_data: Dict[str, Any],
+    country_b_data: Dict[str, Any],
+    country_name_to_id: Dict[str, int],
+    segment_len: int
+) -> List[SDCI]:
+    """Uses FFT-based cross-correlation to find SDCIs for a single segment length."""
+    values_a = country_a_data["values"]
+    values_b = country_b_data["values"]
+    sdcis = []
+
+    if len(values_b) < segment_len:
+        return sdcis
+
+    # Pre-calculate rolling statistics for country B for efficiency
+    b_series = pd.Series(values_b)
+    rolling_mean_b = b_series.rolling(window=segment_len).mean().to_numpy()[segment_len-1:]
+    rolling_std_b = b_series.rolling(window=segment_len).std(ddof=0).to_numpy()[segment_len-1:]
+
+    for start_a in range(len(values_a) - segment_len + 1):
+        segment_a = values_a[start_a : start_a + segment_len]
+        mean_a = np.mean(segment_a)
+        std_a = np.std(segment_a)
+
+        if std_a == 0:
+            continue
+
+        # Normalize segment_a for Pearson correlation
+        norm_segment_a = (segment_a - mean_a) / std_a
+
+        # The cross-correlation result needs to be normalized by the rolling stats of B
+        # to become equivalent to Pearson correlation.
+        correlations = signal.correlate(values_b, norm_segment_a, mode='valid') / segment_len
+
+        for start_b, raw_corr in enumerate(correlations):
+            if rolling_std_b[start_b] == 0:
+                continue
+
+            # Complete the Pearson calculation
+            pearson_corr = raw_corr * (1 / rolling_std_b[start_b])
+
+            if pearson_corr >= CORRELATION_THRESHOLD:
+                sdcis.append(SDCI(
+                    country_a_id=country_name_to_id.get(country_a_data["country"], 0),
+                    country_b_id=country_name_to_id.get(country_b_data["country"], 0),
+                    length=segment_len,
+                    correlation=pearson_corr,
+                    start_year_a=country_a_data["data"].iloc[start_a]["year"],
+                    start_year_b=country_b_data["data"].iloc[start_b]["year"],
+                ))
+    return sdcis
+
+
+def process_one_country_pair(
+    country_a_data: Dict[str, Any],
+    country_b_data: Dict[str, Any],
+    country_name_to_id: Dict[str, int]
+) -> Tuple[str, List[SDCI]]:
+    """
+    Worker function for the process pool. Processes one (Country A vs Country B) pair.
+    """
+    sdcis_for_pair = []
+    values_a = country_a_data["values"]
+
+    for segment_len in range(MIN_LENGTH, len(values_a) + 1):
+        found_sdcis = find_sdcis_with_fft(country_a_data, country_b_data, country_name_to_id, segment_len)
+        if found_sdcis:
+            sdcis_for_pair.extend(found_sdcis)
+
+    return country_b_data["country"], sdcis_for_pair
+
+
+def find_and_save_sdcis_parallel(preprocessed_data: list, country_name_to_id: dict):
+    """
+    Orchestrates the parallel processing of country pairs with checkpointing.
+    """
+    country_a_data = next((c for c in preprocessed_data if c["country"] == COUNTRY_A_NAME), None)
+    if not country_a_data:
+        logging.warning(f"Country '{COUNTRY_A_NAME}' not found. Exiting job.")
+        return
+
+    country_a_index = preprocessed_data.index(country_a_data)
+
+    tmp_output_prefix = f"pipeline-B-scdi-finder/tmp/{INDICATOR_ID}/{COUNTRY_A_NAME}"
+    final_output_key = f"{S3_OUTPUT_PREFIX}/{INDICATOR_ID}/{COUNTRY_A_NAME}.parquet"
+
+    # 1. Check for completed work (checkpointing)
+    completed_country_b = set()
+    try:
+        paginator = s3_client.get_paginator('list_objects_v2')
+        pages = paginator.paginate(Bucket=S3_BUCKET, Prefix=f"{tmp_output_prefix}/")
+        for page in pages:
+            for obj in page.get('Contents', []):
+                done_country = os.path.splitext(os.path.basename(obj['Key']))[0]
+                completed_country_b.add(done_country)
+        if completed_country_b:
+            logging.info(f"Resuming job, found {len(completed_country_b)} completed checkpoints.")
+    except Exception:
+        logging.warning("Could not list checkpoints, starting from scratch.")
+
+    # 2. Set up and run the parallel processing pool
+    tasks = [
+        (country_a_data, country_b_data, country_name_to_id)
+        for country_b_data in preprocessed_data[country_a_index + 1:]
+        if country_b_data["country"] not in completed_country_b
+    ]
+    
+    if not tasks:
+        logging.info("All country pair comparisons are already complete.")
+    else:
+        num_workers = psutil.cpu_count()
+        logging.info(f"Starting ProcessPoolExecutor with {num_workers} workers for {len(tasks)} tasks.")
+        with ProcessPoolExecutor(max_workers=num_workers) as executor:
+            futures = {executor.submit(process_one_country_pair, *task): task for task in tasks}
+            for future in as_completed(futures):
+                try:
+                    country_b_name, sdcis = future.result()
+                    if sdcis:
+                        # Checkpoint write
+                        df = convert_sdcis_to_df(sdcis)
+                        buffer = BytesIO()
+                        df.to_parquet(buffer, index=False, compression="brotli")
+                        key = f"{tmp_output_prefix}/{country_b_name}.parquet"
+                        s3_client.put_object(Bucket=S3_BUCKET, Key=key, Body=buffer.getvalue())
+                        logging.info(f"Checkpointed {len(sdcis)} SDCIs for pair ({COUNTRY_A_NAME}, {country_b_name})")
+                except Exception as e:
+                    failed_country_b = futures[future][1]["country"]
+                    logging.error(f"Comparison with {failed_country_b} failed: {e}", exc_info=True)
+
+    # 3. Consolidate results
+    logging.info("Consolidating all partial results...")
+    all_dfs = []
+    try:
+        paginator = s3_client.get_paginator('list_objects_v2')
+        pages = paginator.paginate(Bucket=S3_BUCKET, Prefix=f"{tmp_output_prefix}/")
+        for page in pages:
+            for obj in page.get('Contents', []):
+                s3_obj = s3_client.get_object(Bucket=S3_BUCKET, Key=obj['Key'])
+                df = pd.read_parquet(BytesIO(s3_obj['Body'].read()))
+                all_dfs.append(df)
+    except Exception as e:
+        logging.error(f"Failed during consolidation: {e}", exc_info=True)
+        # Decide if you want to raise the error or just log it
+        return
+
+    # 4. Save final output and cleanup
+    if all_dfs:
+        final_df = pd.concat(all_dfs, ignore_index=True)
+        buffer = BytesIO()
+        final_df.to_parquet(buffer, index=False, compression="brotli")
+        s3_client.put_object(Bucket=S3_BUCKET, Key=final_output_key, Body=buffer.getvalue())
+        logging.info(f"Saved final output with {len(final_df)} SDCIs to s3://{S3_BUCKET}/{final_output_key}")
+
+        # Cleanup
+        logging.info("Cleaning up temporary checkpoint files...")
+        keys_to_delete = [{'Key': obj['Key']} for page in pages for obj in page.get('Contents', [])]
+        if keys_to_delete:
+            s3_client.delete_objects(Bucket=S3_BUCKET, Delete={'Objects': keys_to_delete})
+    else:
+        logging.info("No SDCIs found for this job.")
+
+def load_data() -> Tuple[pd.DataFrame, pd.DataFrame]:
     """Loads the main indicator file and the countries mapping file from S3."""
     try:
-        # Load main indicator data
         indicator_key = f"{S3_INPUT_PREFIX}/{INDICATOR_ID}/{INDICATOR_ID}.csv.gz"
         logging.info(f"Loading indicator data from s3://{S3_BUCKET}/{indicator_key}")
         indicator_obj = s3_client.get_object(Bucket=S3_BUCKET, Key=indicator_key)
         indicator_df = pd.read_csv(indicator_obj['Body'], compression='gzip')
 
-        # Load countries mapping data
-        countries_key = "pipeline-A-indicator-extractor/input/countries.csv" # Assuming this path is constant
+        countries_key = "pipeline-A-indicator-extractor/input/countries.csv"
         logging.info(f"Loading countries mapping from s3://{S3_BUCKET}/{countries_key}")
         countries_obj = s3_client.get_object(Bucket=S3_BUCKET, Key=countries_key)
         countries_df = pd.read_csv(countries_obj['Body'])
-
         return indicator_df, countries_df
     except Exception as e:
         logging.error(f"Failed to load data from S3: {e}", exc_info=True)
@@ -85,78 +263,26 @@ def preprocess_data(df: pd.DataFrame, countries: list) -> list:
     preprocessed_data = []
     for country in countries:
         country_data = df[df["country"] == country].sort_values("year")
+        if country_data.empty:
+            continue
         values = country_data["value"].values.copy()
 
-        # Simple NaN handling (as per original script)
         nan_indices = pd.isna(values)
         if np.sum(nan_indices) > 1: continue
         if np.sum(nan_indices) == 1:
             nan_pos = np.where(nan_indices)[0][0]
-            if nan_pos == 0: values[nan_pos] = values[nan_pos + 1]
-            elif nan_pos == len(values) - 1: values[nan_pos] = values[nan_pos - 1]
-            else: values[nan_pos] = (values[nan_pos - 1] + values[nan_pos + 1]) / 2
-        
+            if nan_pos == 0 and len(values) > 1: values[nan_pos] = values[nan_pos + 1]
+            elif nan_pos == len(values) - 1 and len(values) > 1: values[nan_pos] = values[nan_pos - 1]
+            elif 0 < nan_pos < len(values) - 1: values[nan_pos] = (values[nan_pos - 1] + values[nan_pos + 1]) / 2
+            else: continue # Cannot fill NaN if it's the only point
+
         preprocessed_data.append({"country": country, "data": country_data, "values": values})
     return preprocessed_data
-
-def find_and_save_sdcis(preprocessed_data: list, country_name_to_id: dict):
-    """Finds all SDCIs and saves results to S3, with checkpointing."""
-    num_countries = len(preprocessed_data)
-    for i, country_a_data in enumerate(preprocessed_data):
-        country_a_name = country_a_data["country"]
-        
-        # S3 Checkpointing: Check if output already exists
-        output_key = f"{S3_OUTPUT_PREFIX}/{INDICATOR_ID}/{country_a_name}.parquet"
-        try:
-            s3_client.head_object(Bucket=S3_BUCKET, Key=output_key)
-            logging.info(f"Skipping '{country_a_name}' ({i+1}/{num_countries}): Output already exists at s3://{S3_BUCKET}/{output_key}")
-            continue
-        except s3_client.exceptions.ClientError as e:
-            if e.response['Error']['Code'] != '404': raise # Re-raise if it's not a "file not found" error
-
-        logging.info(f"Processing country: {country_a_name} ({i+1}/{num_countries})")
-        country_a_sdcis = []
-        values_a = country_a_data["values"]
-
-        # The core brute-force algorithm (unchanged)
-        for segment_len in range(MIN_LENGTH, len(values_a) + 1):
-            for start_a in range(len(values_a) - segment_len + 1):
-                segment_a = values_a[start_a : start_a + segment_len]
-                for country_b_data in preprocessed_data[i + 1 :]:
-                    values_b = country_b_data["values"]
-                    if len(values_b) < segment_len: continue
-                    for start_b in range(len(values_b) - segment_len + 1):
-                        segment_b = values_b[start_b : start_b + segment_len]
-                        if np.std(segment_a) == 0 or np.std(segment_b) == 0: continue
-                        correlation, _ = pearsonr(segment_a, segment_b)
-                        if correlation >= CORRELATION_THRESHOLD:
-                            sdc = SDCI(
-                                country_a_id=country_name_to_id.get(country_a_name, 0),
-                                country_b_id=country_name_to_id.get(country_b_data["country"], 0),
-                                length=segment_len,
-                                correlation=correlation,
-                                start_year_a=country_a_data["data"].iloc[start_a]["year"],
-                                start_year_b=country_b_data["data"].iloc[start_b]["year"],
-                            )
-                            country_a_sdcis.append(sdc)
-        
-        # Save results to S3 if any SDCIs were found
-        if country_a_sdcis:
-            logging.info(f"Found and saving {len(country_a_sdcis)} SDCIs for country '{country_a_name}'")
-            sdcis_df = convert_sdcis_to_df(country_a_sdcis)
-            
-            # Write to a parquet file in memory
-            parquet_buffer = BytesIO()
-            sdcis_df.to_parquet(parquet_buffer, index=False, compression="brotli")
-            
-            # Upload the in-memory file to S3
-            s3_client.put_object(Bucket=S3_BUCKET, Key=output_key, Body=parquet_buffer.getvalue())
 
 def convert_sdcis_to_df(sdcis: List[SDCI]) -> pd.DataFrame:
     """Converts a list of SDCI objects to a memory-optimized DataFrame."""
     if not sdcis: return pd.DataFrame()
-    sdcis_df = pd.DataFrame([sdc.__dict__ for sdc in sdcis])
-    return sdcis_df.astype({
+    return pd.DataFrame([sdc.__dict__ for sdc in sdcis]).astype({
         "country_a_id": "uint16", "country_b_id": "uint16",
         "length": "uint16", "start_year_a": "uint16", "start_year_b": "uint16",
         "correlation": "float32",

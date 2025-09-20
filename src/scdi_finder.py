@@ -34,16 +34,16 @@ import numpy as np
 from scipy import signal
 import psutil # For getting CPU count
 
-# --- Environment Variables ---
+
 S3_BUCKET = os.environ.get('S3_BUCKET')
 S3_INPUT_PREFIX = os.environ.get('S3_INPUT_PREFIX')
 S3_OUTPUT_PREFIX = os.environ.get('S3_OUTPUT_PREFIX')
 INDICATOR_ID = os.environ.get('INDICATOR_ID')
-COUNTRY_A_NAME = os.environ.get('COUNTRY_A_NAME') # NEW: Specific country for this job
+COUNTRY_A_NAME = os.environ.get('COUNTRY_A_NAME')
 MIN_LENGTH = int(os.environ.get('MIN_LENGTH', 3))
 CORRELATION_THRESHOLD = float(os.environ.get('CORRELATION_THRESHOLD', 0.5))
 
-# --- Initialize AWS S3 Client and Logger ---
+
 s3_client = boto3.client('s3')
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
@@ -56,6 +56,7 @@ class SDCI:
     start_year_a: int
     start_year_b: int
     correlation: float
+
 
 def run_pipeline():
     """Main execution function for the job."""
@@ -71,7 +72,7 @@ def run_pipeline():
 
     # 2. Preprocess data
     countries = indicator_df["country"].unique()
-    preprocessed_data = preprocess_data(indicator_df, countries)
+    preprocessed_data = preprocess_data(indicator_df, countries, MIN_LENGTH)
     logging.info(f"Successfully preprocessed data for {len(preprocessed_data)} countries.")
 
     # 3. Find and save SDCIs using the new parallel, checkpointing method
@@ -258,25 +259,79 @@ def load_data() -> Tuple[pd.DataFrame, pd.DataFrame]:
         logging.error(f"Failed to load data from S3: {e}", exc_info=True)
         raise
 
-def preprocess_data(df: pd.DataFrame, countries: list) -> list:
-    """Prepares data for each country, handling NaNs."""
+def preprocess_data(df: pd.DataFrame, countries: list, min_len: int) -> list:
+    """
+    Prepares data for each country by finding the longest possible continuous
+    streak of data, filling at most one NaN if it connects two longer streaks.
+    """
     preprocessed_data = []
     for country in countries:
-        country_data = df[df["country"] == country].sort_values("year")
-        if country_data.empty:
+        country_data = df[df["country"] == country].sort_values("year").reset_index(drop=True)
+        if country_data.empty or len(country_data) < min_len:
             continue
+
         values = country_data["value"].values.copy()
+        not_nan = ~np.isnan(values)
+        
+        if not np.any(not_nan):
+            continue
 
-        nan_indices = pd.isna(values)
-        if np.sum(nan_indices) > 1: continue
-        if np.sum(nan_indices) == 1:
-            nan_pos = np.where(nan_indices)[0][0]
-            if nan_pos == 0 and len(values) > 1: values[nan_pos] = values[nan_pos + 1]
-            elif nan_pos == len(values) - 1 and len(values) > 1: values[nan_pos] = values[nan_pos - 1]
-            elif 0 < nan_pos < len(values) - 1: values[nan_pos] = (values[nan_pos - 1] + values[nan_pos + 1]) / 2
-            else: continue # Cannot fill NaN if it's the only point
+        # Find the start and end indices of all continuous non-NaN blocks
+        change_points = np.diff(not_nan.astype(int))
+        starts = np.where(change_points == 1)[0] + 1
+        ends = np.where(change_points == -1)[0] + 1
+        if not_nan[0]:
+            starts = np.insert(starts, 0, 0)
+        if not_nan[-1]:
+            ends = np.append(ends, len(values))
+        
+        blocks = list(zip(starts, ends))
+        if not blocks:
+            continue
 
-        preprocessed_data.append({"country": country, "data": country_data, "values": values})
+        # --- Find the best possible streak ---
+        best_streak_start, best_streak_end, longest_len = -1, -1, 0
+
+        # 1. Find the single longest natural block
+        for start, end in blocks:
+            if (end - start) > longest_len:
+                longest_len = end - start
+                best_streak_start, best_streak_end = start, end
+
+        # 2. Check if filling a single NaN between two blocks creates a longer streak
+        for i in range(len(blocks) - 1):
+            gap_start, gap_end = blocks[i][1], blocks[i+1][0]
+            if gap_end - gap_start == 1: # A gap of exactly one NaN
+                merged_len = (blocks[i+1][1] - blocks[i][0])
+                if merged_len > longest_len:
+                    longest_len = merged_len
+                    best_streak_start, best_streak_end = blocks[i][0], blocks[i+1][1]
+
+        # --- Process the best streak found ---
+        if longest_len >= min_len:
+            final_data_slice = country_data.iloc[best_streak_start:best_streak_end].copy()
+            final_values_slice = values[best_streak_start:best_streak_end].copy()
+
+            # If the best streak was a merged one, fill the single NaN
+            nan_indices = np.isnan(final_values_slice)
+            if np.sum(nan_indices) == 1:
+                nan_pos = np.where(nan_indices)[0][0]
+                if 0 < nan_pos < len(final_values_slice) - 1:
+                    final_values_slice[nan_pos] = (final_values_slice[nan_pos - 1] + final_values_slice[nan_pos + 1]) / 2
+                else:
+                    # This case is unlikely due to the logic, but as a safeguard, we discard
+                    continue
+            
+            # Final check for any remaining NaNs
+            if np.any(np.isnan(final_values_slice)):
+                 continue
+
+            preprocessed_data.append({
+                "country": country,
+                "data": final_data_slice.reset_index(drop=True),
+                "values": final_values_slice
+            })
+            
     return preprocessed_data
 
 def convert_sdcis_to_df(sdcis: List[SDCI]) -> pd.DataFrame:

@@ -25,9 +25,7 @@ input_dyf = glueContext.create_dynamic_frame.from_options(
     format="parquet",
     transformation_ctx="input_dyf",
 )
-
 df = input_dyf.toDF()
-
 if df.rdd.isEmpty():
     print("No input data found. Exiting job.")
     sys.exit(0)
@@ -39,8 +37,6 @@ df = df.withColumn(
 )
 
 # --- 3. Core Aggregation Logic ---
-# [cite_start]This is the heart of the Pattern Synthesizer[cite: 97]. It groups SDCIs
-# [cite_start]into a smaller, more meaningful dataset of "Patterns"[cite: 97, 142].
 patterns_df = df.groupBy(
     "country_a_id", "country_b_id", "length", "start_year_a", "start_year_b"
 ).agg(
@@ -50,8 +46,14 @@ patterns_df = df.groupBy(
 )
 
 # --- 4. Filtering and Enrichment ---
-# [cite_start]A "Pattern" is significant only if supported by multiple independent indicators[cite: 199].
+
+# ADDED: Print count before filtering
+print(f"Number of potential patterns BEFORE filtering: {patterns_df.count()}")
+
 patterns_df = patterns_df.filter(F.col("indicator_count") > 1)
+
+# ADDED: Print count after filtering
+print(f"Number of final patterns AFTER filtering: {patterns_df.count()}")
 
 patterns_df = patterns_df.withColumn(
     "pattern_power_score",
@@ -59,8 +61,6 @@ patterns_df = patterns_df.withColumn(
 )
 
 # --- 5. Write Output to S3 ---
-# Use the correct DataFrame name: 'patterns_df'
-# mode("overwrite") ensures the job can be re-run for updates.
 patterns_df.write.mode("overwrite").parquet(S3_OUTPUT_PATH)
 
 job.commit()

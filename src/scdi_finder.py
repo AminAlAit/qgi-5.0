@@ -202,7 +202,7 @@ def find_and_save_sdcis_parallel(preprocessed_data: list, country_name_to_id: di
                         # Checkpoint write
                         df = convert_sdcis_to_df(sdcis)
                         buffer = BytesIO()
-                        df.to_parquet(buffer, index=False, compression="brotli")
+                        df.to_parquet(buffer, index=False, compression="snappy")
                         key = f"{tmp_output_prefix}/{country_b_name}.parquet"
                         s3_client.put_object(Bucket=S3_BUCKET, Key=key, Body=buffer.getvalue())
                         logging.info(f"Checkpointed {len(sdcis)} SDCIs for pair ({COUNTRY_A_NAME}, {country_b_name})")

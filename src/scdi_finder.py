@@ -47,6 +47,11 @@ CORRELATION_THRESHOLD = float(os.environ.get('CORRELATION_THRESHOLD', 0.5))
 s3_client = boto3.client('s3')
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
+S3_DEBUG_OUTPUT_PREFIX = os.environ.get('S3_DEBUG_OUTPUT_PREFIX')
+if S3_DEBUG_OUTPUT_PREFIX:
+    logging.warning(f"DEBUG MODE: Overriding output path to s3://{S3_BUCKET}/{S3_DEBUG_OUTPUT_PREFIX}")
+    S3_OUTPUT_PREFIX = S3_DEBUG_OUTPUT_PREFIX
+
 @dataclass
 class SDCI:
     """Represents a Single Dyadic Correlating Index."""
@@ -226,21 +231,33 @@ def find_and_save_sdcis_parallel(preprocessed_data: list, country_name_to_id: di
         # Decide if you want to raise the error or just log it
         return
 
-    # 4. Save final output and cleanup
+    # 4. Save final output
     if all_dfs:
         final_df = pd.concat(all_dfs, ignore_index=True)
         buffer = BytesIO()
-        final_df.to_parquet(buffer, index=False, compression="brotli")
+        final_df.to_parquet(buffer, index=False, compression="snappy")
         s3_client.put_object(Bucket=S3_BUCKET, Key=final_output_key, Body=buffer.getvalue())
         logging.info(f"Saved final output with {len(final_df)} SDCIs to s3://{S3_BUCKET}/{final_output_key}")
-
-        # Cleanup
-        logging.info("Cleaning up temporary checkpoint files...")
-        keys_to_delete = [{'Key': obj['Key']} for page in pages for obj in page.get('Contents', [])]
-        if keys_to_delete:
-            s3_client.delete_objects(Bucket=S3_BUCKET, Delete={'Objects': keys_to_delete})
     else:
         logging.info("No SDCIs found for this job.")
+
+    # 5. Cleanup (Single, robust block)
+    logging.info("Cleaning up temporary checkpoint files...")
+    all_temp_files = []
+    try:
+        paginator = s3_client.get_paginator('list_objects_v2')
+        # Use a fresh paginator to list everything in the temp directory
+        pages = paginator.paginate(Bucket=S3_BUCKET, Prefix=f"{tmp_output_prefix}/")
+        for page in pages:
+            for obj in page.get('Contents', []):
+                all_temp_files.append({'Key': obj['Key']})
+    except Exception as e:
+        logging.error(f"Could not list temp files for cleanup: {e}")
+        return # Exit if we can't list files
+
+    if all_temp_files:
+        s3_client.delete_objects(Bucket=S3_BUCKET, Delete={'Objects': all_temp_files})
+        logging.info(f"Deleted {len(all_temp_files)} temporary checkpoint files.")
 
 def load_data() -> Tuple[pd.DataFrame, pd.DataFrame]:
     """Loads the main indicator file and the countries mapping file from S3."""

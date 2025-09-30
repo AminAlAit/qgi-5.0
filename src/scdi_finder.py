@@ -158,9 +158,33 @@ def process_one_country_pair(
     return country_b_data["country"], sdcis_for_pair
 
 
+def delete_s3_prefix(bucket: str, prefix: str):
+    """
+    Deletes all objects under a given prefix in S3, handling pagination and batching.
+    This is the robust way to "delete a folder".
+    """
+    paginator = s3_client.get_paginator('list_objects_v2')
+    pages = paginator.paginate(Bucket=bucket, Prefix=prefix)
+    
+    # The delete_objects API call is limited to 1000 keys per request.
+    # We must batch our deletions into chunks of 1000.
+    keys_to_delete = []
+    for page in pages:
+        for obj in page.get('Contents', []):
+            keys_to_delete.append({'Key': obj['Key']})
+            if len(keys_to_delete) == 1000:
+                s3_client.delete_objects(Bucket=bucket, Delete={'Objects': keys_to_delete})
+                logging.info(f"Deleted a batch of {len(keys_to_delete)} temporary files.")
+                keys_to_delete = [] # Reset the batch
+    
+    # Delete the final remaining batch
+    if keys_to_delete:
+        s3_client.delete_objects(Bucket=bucket, Delete={'Objects': keys_to_delete})
+        logging.info(f"Deleted the final batch of {len(keys_to_delete)} temporary files.")
+
 def find_and_save_sdcis_parallel(preprocessed_data: list, country_name_to_id: dict):
     """
-    Orchestrates the parallel processing of country pairs with checkpointing.
+    Orchestrates the parallel processing of country pairs with checkpointing and robust cleanup.
     """
     country_a_data = next((c for c in preprocessed_data if c["country"] == COUNTRY_A_NAME), None)
     if not country_a_data:
@@ -168,15 +192,14 @@ def find_and_save_sdcis_parallel(preprocessed_data: list, country_name_to_id: di
         return
 
     country_a_index = preprocessed_data.index(country_a_data)
-
-    tmp_output_prefix = f"pipeline-B-scdi-finder/tmp/{INDICATOR_ID}/{COUNTRY_A_NAME}"
+    tmp_output_prefix = f"pipeline-B-scdi-finder/tmp/{INDICATOR_ID}/{COUNTRY_A_NAME}/"
     final_output_key = f"{S3_OUTPUT_PREFIX}/{INDICATOR_ID}/{COUNTRY_A_NAME}.parquet"
 
     # 1. Check for completed work (checkpointing)
     completed_country_b = set()
     try:
         paginator = s3_client.get_paginator('list_objects_v2')
-        pages = paginator.paginate(Bucket=S3_BUCKET, Prefix=f"{tmp_output_prefix}/")
+        pages = paginator.paginate(Bucket=S3_BUCKET, Prefix=tmp_output_prefix)
         for page in pages:
             for obj in page.get('Contents', []):
                 done_country = os.path.splitext(os.path.basename(obj['Key']))[0]
@@ -192,7 +215,6 @@ def find_and_save_sdcis_parallel(preprocessed_data: list, country_name_to_id: di
         for country_b_data in preprocessed_data[country_a_index + 1:]
         if country_b_data["country"] not in completed_country_b
     ]
-    
     if not tasks:
         logging.info("All country pair comparisons are already complete.")
     else:
@@ -204,11 +226,10 @@ def find_and_save_sdcis_parallel(preprocessed_data: list, country_name_to_id: di
                 try:
                     country_b_name, sdcis = future.result()
                     if sdcis:
-                        # Checkpoint write
                         df = convert_sdcis_to_df(sdcis)
                         buffer = BytesIO()
                         df.to_parquet(buffer, index=False, compression="snappy")
-                        key = f"{tmp_output_prefix}/{country_b_name}.parquet"
+                        key = f"{tmp_output_prefix}{country_b_name}.parquet"
                         s3_client.put_object(Bucket=S3_BUCKET, Key=key, Body=buffer.getvalue())
                         logging.info(f"Checkpointed {len(sdcis)} SDCIs for pair ({COUNTRY_A_NAME}, {country_b_name})")
                 except Exception as e:
@@ -220,7 +241,7 @@ def find_and_save_sdcis_parallel(preprocessed_data: list, country_name_to_id: di
     all_dfs = []
     try:
         paginator = s3_client.get_paginator('list_objects_v2')
-        pages = paginator.paginate(Bucket=S3_BUCKET, Prefix=f"{tmp_output_prefix}/")
+        pages = paginator.paginate(Bucket=S3_BUCKET, Prefix=tmp_output_prefix)
         for page in pages:
             for obj in page.get('Contents', []):
                 s3_obj = s3_client.get_object(Bucket=S3_BUCKET, Key=obj['Key'])
@@ -228,8 +249,7 @@ def find_and_save_sdcis_parallel(preprocessed_data: list, country_name_to_id: di
                 all_dfs.append(df)
     except Exception as e:
         logging.error(f"Failed during consolidation: {e}", exc_info=True)
-        # Decide if you want to raise the error or just log it
-        return
+        # We will still attempt to clean up even if consolidation fails.
 
     # 4. Save final output
     if all_dfs:
@@ -241,23 +261,13 @@ def find_and_save_sdcis_parallel(preprocessed_data: list, country_name_to_id: di
     else:
         logging.info("No SDCIs found for this job.")
 
-    # 5. Cleanup (Single, robust block)
-    logging.info("Cleaning up temporary checkpoint files...")
-    all_temp_files = []
+    # 5. Cleanup (using the new robust function)
+    logging.info(f"Cleaning up temporary prefix: {tmp_output_prefix}")
     try:
-        paginator = s3_client.get_paginator('list_objects_v2')
-        # Use a fresh paginator to list everything in the temp directory
-        pages = paginator.paginate(Bucket=S3_BUCKET, Prefix=f"{tmp_output_prefix}/")
-        for page in pages:
-            for obj in page.get('Contents', []):
-                all_temp_files.append({'Key': obj['Key']})
+        delete_s3_prefix(S3_BUCKET, tmp_output_prefix)
+        logging.info("Cleanup of temporary prefix complete.")
     except Exception as e:
-        logging.error(f"Could not list temp files for cleanup: {e}")
-        return # Exit if we can't list files
-
-    if all_temp_files:
-        s3_client.delete_objects(Bucket=S3_BUCKET, Delete={'Objects': all_temp_files})
-        logging.info(f"Deleted {len(all_temp_files)} temporary checkpoint files.")
+        logging.error(f"An error occurred during cleanup: {e}", exc_info=True)
 
 def load_data() -> Tuple[pd.DataFrame, pd.DataFrame]:
     """Loads the main indicator file and the countries mapping file from S3."""

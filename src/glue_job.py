@@ -7,7 +7,8 @@ from awsglue.job import Job
 import pyspark.sql.functions as F
 
 # --- Job Initialization ---
-args = getResolvedOptions(sys.argv, ["JOB_NAME", "S3_INPUT_PATH", "S3_OUTPUT_PATH"])
+# ADDED: New optional argument for test runs
+args = getResolvedOptions(sys.argv, ["JOB_NAME", "S3_INPUT_PATH", "S3_OUTPUT_PATH", "INDICATOR_SUBSET"])
 sc = SparkContext()
 glueContext = GlueContext(sc)
 spark = glueContext.spark_session
@@ -18,14 +19,28 @@ job.init(args["JOB_NAME"], args)
 S3_INPUT_PATH = args["S3_INPUT_PATH"]
 S3_OUTPUT_PATH = args["S3_OUTPUT_PATH"]
 
-# --- 1. Read Raw SDCI Data ---
-input_dyf = glueContext.create_dynamic_frame.from_options(
-    connection_type="s3",
-    connection_options={"paths": [S3_INPUT_PATH], "recurse": True},
-    format="parquet",
-    transformation_ctx="input_dyf",
-)
+# --- 1. Read Raw SDCI Data (UPDATED LOGIC) ---
+indicator_subset_str = args.get("INDICATOR_SUBSET")
+
+read_options = {
+    "connection_type": "s3",
+    "format": "parquet"
+}
+
+if indicator_subset_str:
+    # Test mode: Construct specific S3 paths from the provided indicator list
+    indicator_list = [indicator.strip() for indicator in indicator_subset_str.split(',')]
+    s3_paths = [f"{S3_INPUT_PATH}{indicator}/" for indicator in indicator_list]
+    print(f"RUNNING IN TEST MODE. Reading from {len(s3_paths)} specific indicator paths.")
+    read_options["connection_options"] = {"paths": s3_paths}
+else:
+    # Full run mode: Read all data from the root path recursively
+    print("RUNNING IN FULL MODE. Reading all indicators recursively.")
+    read_options["connection_options"] = {"paths": [S3_INPUT_PATH], "recurse": True}
+
+input_dyf = glueContext.create_dynamic_frame.from_options(**read_options)
 df = input_dyf.toDF()
+
 if df.rdd.isEmpty():
     print("No input data found. Exiting job.")
     sys.exit(0)
@@ -46,13 +61,8 @@ patterns_df = df.groupBy(
 )
 
 # --- 4. Filtering and Enrichment ---
-
-# ADDED: Print count before filtering
 print(f"Number of potential patterns BEFORE filtering: {patterns_df.count()}")
-
 patterns_df = patterns_df.filter(F.col("indicator_count") > 1)
-
-# ADDED: Print count after filtering
 print(f"Number of final patterns AFTER filtering: {patterns_df.count()}")
 
 patterns_df = patterns_df.withColumn(

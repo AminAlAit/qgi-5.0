@@ -193,7 +193,7 @@ def find_and_save_sdcis_parallel(preprocessed_data: list, country_name_to_id: di
 
     country_a_index = preprocessed_data.index(country_a_data)
     tmp_output_prefix = f"pipeline-B-scdi-finder/tmp/{INDICATOR_ID}/{COUNTRY_A_NAME}/"
-    final_output_key = f"{S3_OUTPUT_PREFIX}/{INDICATOR_ID}/{COUNTRY_A_NAME}.parquet"
+    final_output_key = f"{S3_OUTPUT_PREFIX}/indicator_id={INDICATOR_ID}/{COUNTRY_A_NAME}.parquet"
 
     # 1. Check for completed work (checkpointing)
     completed_country_b = set()

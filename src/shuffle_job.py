@@ -11,6 +11,7 @@ def main():
     S3 destination, partitioned by the core temporal keys.
     """
     # --- 1. Load configuration from environment variables ---
+    # (This part remains the same)
     try:
         s3_bucket = os.environ['S3_BUCKET']
         s3_input_key = os.environ['S3_INPUT_KEY']
@@ -23,47 +24,42 @@ def main():
         raise
 
     # --- 2. Define S3 paths and partition columns ---
+    # (This part remains the same)
     input_s3_path = f"s3://{s3_bucket}/{s3_input_key}"
     output_s3_path = f"s3://{s3_bucket}/{s3_output_prefix}"
-    
-    # These are the 5 keys that define a unique temporal signature for a "Pattern"
-    # and will be used to partition the data on S3.
     partition_columns = [
-        'country_a_id',   # [cite: 245]
-        'country_b_id',   # [cite: 246]
-        'length',         # [cite: 247]
-        'start_year_a',   # [cite: 248]
-        'start_year_b'    # [cite: 249]
+        'country_a_id', 'country_b_id', 'length', 'start_year_a', 'start_year_b'
     ]
     
     logging.info(f"Reading from: {input_s3_path}")
-    logging.info(f"Writing to: {output_s3_path}")
-    logging.info(f"Partitioning by: {partition_columns}")
 
     try:
         # --- 3. Read the source Parquet file into a DataFrame ---
+        # (This part remains the same)
         df = pd.read_parquet(input_s3_path, engine='pyarrow')
         
         if df.empty:
             logging.warning(f"Input file {input_s3_path} is empty or contains no data. Nothing to do.")
             return
 
-        # --- 4. Write the DataFrame to the new S3 location with partitioning ---
-        # This is the core of the "distributed shuffle". Pandas and PyArrow handle
-        # the creation of the directory structure on S3 based on the unique values
-        # in the `partition_cols`.
+        # --- 4. NEW: Dynamically calculate the number of partitions required ---
+        num_unique_partitions = df.drop_duplicates(subset=partition_columns).shape[0]
+        logging.info(f"This file will be written into {num_unique_partitions} unique partitions.")
+
+        # --- 5. Write the DataFrame with the dynamic limit ---
         df.to_parquet(
             output_s3_path,
             engine='pyarrow',
             partition_cols=partition_columns,
-            compression='snappy' # Snappy is a good balance of speed and size
+            compression='snappy',
+            # Use the dynamically calculated number as the limit
+            max_partitions=num_unique_partitions
         )
 
-        logging.info(f"Successfully processed and wrote {len(df)} rows from {input_s3_path}")
+        logging.info(f"Successfully processed and wrote {len(df)} rows into {num_unique_partitions} partitions.")
 
     except Exception as e:
         logging.error(f"An error occurred during processing of {input_s3_path}: {e}")
-        # Re-raise the exception to ensure the AWS Batch job is marked as FAILED
         raise
 
 if __name__ == "__main__":

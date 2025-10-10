@@ -1,4 +1,4 @@
-FROM public.ecr.aws/lambda/python:3.12
+FROM python:3.12-slim
 
 # Boto3 is included in the base image, so we don't need a requirements.txt
 COPY src/pattern_inserter.py ./

@@ -2,6 +2,8 @@ import os
 import boto3
 import logging
 import time
+import uuid
+
 
 # Configure logging
 logger = logging.getLogger()
@@ -23,13 +25,17 @@ SCDIS_TABLE = "scdis"
 COUNTRIES_TABLE = "countries_parquet"
 PATTERNS_TABLE_NAME = "patterns"
 
-def run_athena_query(query_string):
+def run_athena_query(query_string, output_location):
     """Executes a query and waits for it to succeed."""
     logger.info(f"Executing query: \n{query_string}")
+
+    result_output_location = f"{output_location.rstrip('/')}/batch_query_results/{uuid.uuid4()}"
+
     # Workgroup and OutputLocation can be set on the Workgroup itself
     query_execution = athena_client.start_query_execution(
         QueryString=query_string,
-        QueryExecutionContext={'Database': DB_NAME}
+        QueryExecutionContext={'Database': DB_NAME},
+        ResultConfiguration={'OutputLocation': result_output_location}
     )
     query_execution_id = query_execution['QueryExecutionId']
 

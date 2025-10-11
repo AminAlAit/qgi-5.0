@@ -7,7 +7,8 @@ import time
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
-athena_client = boto3.client('athena')
+region = os.environ['AWS_REGION']
+athena_client = boto3.client('athena', region_name=region)
 
 # --- Configuration (can also be passed as env vars if they change) ---
 # TODO: convert to env vars

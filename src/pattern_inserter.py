@@ -53,29 +53,30 @@ def run_athena_query(query_string, output_location):
                 raise Exception(f"Query {query_execution_id} failed: {error_message}")
         time.sleep(5)
 
-country_name = os.environ['COUNTRY_NAME']
-logger.info(f"--- Starting Batch Job for country: {country_name} ---")
+if __name__ == "__main__":
+    country_name = os.environ['COUNTRY_NAME']
+    logger.info(f"--- Starting Batch Job for country: {country_name} ---")
 
-insert_query = f"""
-INSERT INTO {DB_NAME}.{PATTERNS_TABLE_NAME}
-SELECT
-    c_b.id AS country_b_id,
-    s.length, 
-    s.start_year_a, 
-    s.start_year_b,
-    COUNT(*) AS indicator_count,
-    AVG(s.correlation) AS avg_correlation,
-    AVG(s.correlation) * CAST(s.length AS double) * COUNT(*) AS pattern_power_score,
-    c_a.id AS country_a_id
-FROM {DB_NAME}.{SCDIS_TABLE} AS s
-JOIN {DB_NAME}.{COUNTRIES_TABLE} AS c_a ON s.country_a_id = c_a.id
-JOIN {DB_NAME}.{COUNTRIES_TABLE} AS c_b ON s.country_b_id = c_b.id
-WHERE c_a.country_name = '{country_name.replace("'", "''")}'
-GROUP BY c_a.id, c_b.id, s.length, s.start_year_a, s.start_year_b
-HAVING COUNT(*) > 1
-"""
+    insert_query = f"""
+    INSERT INTO {DB_NAME}.{PATTERNS_TABLE_NAME}
+    SELECT
+        c_b.id AS country_b_id,
+        s.length, 
+        s.start_year_a, 
+        s.start_year_b,
+        COUNT(*) AS indicator_count,
+        AVG(s.correlation) AS avg_correlation,
+        AVG(s.correlation) * CAST(s.length AS double) * COUNT(*) AS pattern_power_score,
+        c_a.id AS country_a_id
+    FROM {DB_NAME}.{SCDIS_TABLE} AS s
+    JOIN {DB_NAME}.{COUNTRIES_TABLE} AS c_a ON s.country_a_id = c_a.id
+    JOIN {DB_NAME}.{COUNTRIES_TABLE} AS c_b ON s.country_b_id = c_b.id
+    WHERE c_a.country_name = '{country_name.replace("'", "''")}'
+    GROUP BY c_a.id, c_b.id, s.length, s.start_year_a, s.start_year_b
+    HAVING COUNT(*) > 1
+    """
 
-logger.info("Going into `run_athena_query`")
+    logger.info("Going into `run_athena_query`")
 
-run_athena_query(insert_query, s3_output_location)
-logger.info(f"--- Batch Job for {country_name} completed successfully. ---")
+    run_athena_query(insert_query, s3_output_location)
+    logger.info(f"--- Batch Job for {country_name} completed successfully. ---")

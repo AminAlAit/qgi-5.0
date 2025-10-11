@@ -9,6 +9,8 @@ import uuid
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
+logger.info("Job started")
+
 region = os.environ['AWS_REGION']
 s3_output_location = os.environ.get('S3_OUTPUT_LOCATION')
 
@@ -72,5 +74,8 @@ WHERE c_a.country_name = '{country_name.replace("'", "''")}'
 GROUP BY c_a.id, c_b.id, s.length, s.start_year_a, s.start_year_b
 HAVING COUNT(*) > 1
 """
+
+logger.info("Going into `run_athena_query`")
+
 run_athena_query(insert_query, s3_output_location)
 logger.info(f"--- Batch Job for {country_name} completed successfully. ---")

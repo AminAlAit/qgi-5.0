@@ -8,6 +8,12 @@ logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
 region = os.environ['AWS_REGION']
+s3_output_location = os.environ.get('S3_OUTPUT_LOCATION')
+
+if not region or not s3_output_location:
+    raise Exception("FATAL: AWS_REGION and S3_OUTPUT_LOCATION environment variables are required.")
+
+
 athena_client = boto3.client('athena', region_name=region)
 
 # --- Configuration (can also be passed as env vars if they change) ---
@@ -57,5 +63,5 @@ if __name__ == "__main__":
     GROUP BY c_a.country_name, c_b.country_name, s.length, s.start_year_a, s.start_year_b, c_a.id
     HAVING COUNT(*) > 1
     """
-    run_athena_query(insert_query)
+    run_athena_query(insert_query, s3_output_location)
     logger.info(f"--- Batch Job for {country_name} completed successfully. ---")

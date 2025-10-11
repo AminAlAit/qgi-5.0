@@ -1,7 +1,11 @@
 FROM python:3.12-slim
 
-# Boto3 is included in the base image, so we don't need a requirements.txt
-COPY src/pattern_inserter.py ./
+# Copy the requirements file and install dependencies first
+COPY requirements.txt .
+RUN pip install -r requirements.txt
 
-# The CMD is not strictly necessary as Batch will run the command, but it's good practice.
-CMD ["pattern_inserter.py"]
+# Now copy the application script
+COPY src/pattern_inserter.py .
+
+# Set the command to run the script
+CMD ["python", "pattern_inserter.py"]

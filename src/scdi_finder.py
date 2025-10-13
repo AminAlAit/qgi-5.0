@@ -191,9 +191,18 @@ def find_and_save_sdcis_parallel(preprocessed_data: list, country_name_to_id: di
         logging.warning(f"Country '{COUNTRY_A_NAME}' not found. Exiting job.")
         return
 
-    country_a_index = preprocessed_data.index(country_a_data)
+    # 1. Get the numeric ID for Country A to use in the partition path.
+    country_a_id = country_name_to_id.get(COUNTRY_A_NAME)
+    if not country_a_id:
+        logging.error(f"Could not find numeric ID for country '{COUNTRY_A_NAME}'. Cannot determine partition path. Exiting.")
+        return
+
+    # 2. Define the new, correctly partitioned final output path.
+    # The output is now a single Parquet file inside a Hive-style partition folder.
     tmp_output_prefix = f"pipeline-B-scdi-finder/tmp/{INDICATOR_ID}/{COUNTRY_A_NAME}/"
-    final_output_key = f"{S3_OUTPUT_PREFIX}/indicator_id={INDICATOR_ID}/{COUNTRY_A_NAME}.parquet"
+    final_output_key = f"{S3_OUTPUT_PREFIX}/country_a_id={country_a_id}/{INDICATOR_ID}.parquet"
+    
+    logging.info(f"This job will write its final output to: s3://{S3_BUCKET}/{final_output_key}")
 
     # 1. Check for completed work (checkpointing)
     completed_country_b = set()
@@ -210,6 +219,7 @@ def find_and_save_sdcis_parallel(preprocessed_data: list, country_name_to_id: di
         logging.warning("Could not list checkpoints, starting from scratch.")
 
     # 2. Set up and run the parallel processing pool
+    country_a_index = preprocessed_data.index(country_a_data)
     tasks = [
         (country_a_data, country_b_data, country_name_to_id)
         for country_b_data in preprocessed_data[country_a_index + 1:]

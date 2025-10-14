@@ -264,6 +264,11 @@ def find_and_save_sdcis_parallel(preprocessed_data: list, country_name_to_id: di
     # 4. Save final output
     if all_dfs:
         final_df = pd.concat(all_dfs, ignore_index=True)
+
+        # The country_a_id is stored in the S3 path, so it's redundant here.
+        if 'country_a_id' in final_df.columns:
+            final_df = final_df.drop(columns=['country_a_id'])
+
         buffer = BytesIO()
         final_df.to_parquet(buffer, index=False, compression="snappy")
         s3_client.put_object(Bucket=S3_BUCKET, Key=final_output_key, Body=buffer.getvalue())

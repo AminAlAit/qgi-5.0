@@ -52,6 +52,7 @@ if S3_DEBUG_OUTPUT_PREFIX:
     logging.warning(f"DEBUG MODE: Overriding output path to s3://{S3_BUCKET}/{S3_DEBUG_OUTPUT_PREFIX}")
     S3_OUTPUT_PREFIX = S3_DEBUG_OUTPUT_PREFIX
 
+
 @dataclass
 class SDCI:
     """Represents a Single Dyadic Correlating Index."""
@@ -61,6 +62,24 @@ class SDCI:
     start_year_a: int
     start_year_b: int
     correlation: float
+
+
+def load_indicator_map(bucket: str) -> Dict[str, int]:
+    """Loads the indicator string-to-numeric-ID map from S3."""
+    # Define the S3 key for your indicator map CSV file
+    # Example: 'pipeline-A-indicator-extractor/input/indicator_map.csv'
+    map_key = "pipeline-A-indicator-extractor/input/indicator_map.csv" # Adjust if needed
+    logging.info(f"Loading indicator mapping from s3://{bucket}/{map_key}")
+    try:
+        map_obj = s3_client.get_object(Bucket=bucket, Key=map_key)
+        map_df = pd.read_csv(map_obj['Body'])
+        # Assumes columns are named 'indicator_id_string' and 'indicator_numeric_id'
+        if not {'indicator_id_string', 'indicator_numeric_id'}.issubset(map_df.columns):
+             raise ValueError("Indicator map CSV is missing required columns.")
+        return map_df.set_index('indicator_id_string')['indicator_numeric_id'].to_dict()
+    except Exception as e:
+        logging.error(f"Failed to load indicator map from S3: {e}", exc_info=True)
+        raise
 
 
 def run_pipeline():
@@ -75,13 +94,20 @@ def run_pipeline():
     indicator_df, countries_df = load_data()
     country_name_to_id = {row["name_1"]: row["id"] for _, row in countries_df.iterrows()}
 
-    # 2. Preprocess data
+    # 2. Load Indicator Map
+    indicator_map = load_indicator_map(S3_BUCKET)
+    indicator_numeric_id = indicator_map.get(INDICATOR_ID)
+    if indicator_numeric_id is None:
+        logging.error(f"Numeric ID for indicator '{INDICATOR_ID}' not found in map. Exiting.")
+        raise ValueError(f"Numeric ID for indicator '{INDICATOR_ID}' not found in map.")
+
+    # 3. Preprocess data
     countries = indicator_df["country"].unique()
     preprocessed_data = preprocess_data(indicator_df, countries, MIN_LENGTH)
     logging.info(f"Successfully preprocessed data for {len(preprocessed_data)} countries.")
 
-    # 3. Find and save SDCIs using the new parallel, checkpointing method
-    find_and_save_sdcis_parallel(preprocessed_data, country_name_to_id)
+    # 4. Find and save SDCIs using the new parallel, checkpointing method
+    find_and_save_sdcis_parallel(preprocessed_data, country_name_to_id, indicator_numeric_id)
 
     logging.info(f"--- Job for Indicator {INDICATOR_ID}, Country {COUNTRY_A_NAME} completed successfully. ---")
 
@@ -182,7 +208,7 @@ def delete_s3_prefix(bucket: str, prefix: str):
         s3_client.delete_objects(Bucket=bucket, Delete={'Objects': keys_to_delete})
         logging.info(f"Deleted the final batch of {len(keys_to_delete)} temporary files.")
 
-def find_and_save_sdcis_parallel(preprocessed_data: list, country_name_to_id: dict):
+def find_and_save_sdcis_parallel(preprocessed_data: list, country_name_to_id: dict, indicator_numeric_id: int):
     """
     Orchestrates the parallel processing of country pairs with checkpointing and robust cleanup.
     """
@@ -265,16 +291,18 @@ def find_and_save_sdcis_parallel(preprocessed_data: list, country_name_to_id: di
     if all_dfs:
         final_df = pd.concat(all_dfs, ignore_index=True)
 
-        # The country_a_id is stored in the S3 path, so it's redundant here.
         if 'country_a_id' in final_df.columns:
             final_df = final_df.drop(columns=['country_a_id'])
+
+        # Add the indicator_numeric_id column
+        final_df['indicator_numeric_id'] = indicator_numeric_id
+        # Optional: Cast to a smaller integer type if desired
+        final_df['indicator_numeric_id'] = final_df['indicator_numeric_id'].astype('uint16')
 
         buffer = BytesIO()
         final_df.to_parquet(buffer, index=False, compression="snappy")
         s3_client.put_object(Bucket=S3_BUCKET, Key=final_output_key, Body=buffer.getvalue())
         logging.info(f"Saved final output with {len(final_df)} SDCIs to s3://{S3_BUCKET}/{final_output_key}")
-    else:
-        logging.info("No SDCIs found for this job.")
 
     # 5. Cleanup (using the new robust function)
     logging.info(f"Cleaning up temporary prefix: {tmp_output_prefix}")

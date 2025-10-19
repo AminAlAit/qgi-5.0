@@ -119,6 +119,7 @@ def find_sdcis_with_fft(
     segment_len: int
 ) -> List[SDCI]:
     """Uses FFT-based cross-correlation to find SDCIs for a single segment length."""
+
     values_a = country_a_data["values"]
     values_b = country_b_data["values"]
     sdcis = []

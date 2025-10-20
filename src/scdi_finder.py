@@ -143,23 +143,35 @@ def find_sdcis_with_fft(
         # Normalize segment_a for Pearson correlation
         norm_segment_a = (segment_a - mean_a) / std_a
 
-        # The cross-correlation result needs to be normalized by the rolling stats of B
-        # to become equivalent to Pearson correlation.
-        correlations = signal.correlate(values_b, norm_segment_a, mode='valid') / segment_len
+        # --- START FIX ---
+        # This is the full cross-correlation, but it's not yet Pearson
+        correlations = signal.correlate(values_b, norm_segment_a, mode='valid')
 
-        for start_b, raw_corr in enumerate(correlations):
-            if rolling_std_b[start_b] == 0:
+        # We must apply the full, robust formula to correct for
+        # floating point errors and non-zero means.
+        sum_z_a = np.sum(norm_segment_a)
+
+        for start_b in range(len(correlations)):
+            std_b = rolling_std_b[start_b]
+            if std_b == 0:
                 continue
 
-            # Complete the Pearson calculation
-            pearson_corr = raw_corr * (1 / rolling_std_b[start_b])
+            mean_b = rolling_mean_b[start_b]
+
+            # This is Sum(B * Z(A))
+            raw_corr_sum = correlations[start_b] 
+
+            # This is the correct, numerically stable Pearson formula:
+            # (1 / (N * std_b)) * [ Sum(B*Z(A)) - mean_b * Sum(Z(A)) ]
+            pearson_corr = (1 / (segment_len * std_b)) * (raw_corr_sum - (mean_b * sum_z_a))
+
 
             if pearson_corr >= CORRELATION_THRESHOLD:
                 sdcis.append(SDCI(
                     country_a_id=country_name_to_id.get(country_a_data["country"], 0),
                     country_b_id=country_name_to_id.get(country_b_data["country"], 0),
                     length=segment_len,
-                    correlation=pearson_corr,
+                    correlation=pearson_corr, # Now this is a correct value
                     start_year_a=country_a_data["data"].iloc[start_a]["year"],
                     start_year_b=country_b_data["data"].iloc[start_b]["year"],
                 ))

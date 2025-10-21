@@ -171,7 +171,7 @@ def find_sdcis_with_fft(
                     country_a_id=country_name_to_id.get(country_a_data["country"], 0),
                     country_b_id=country_name_to_id.get(country_b_data["country"], 0),
                     length=segment_len,
-                    correlation=pearson_corr, # Now this is a correct value
+                    correlation= min(1.0,pearson_corr),
                     start_year_a=country_a_data["data"].iloc[start_a]["year"],
                     start_year_b=country_b_data["data"].iloc[start_b]["year"],
                 ))

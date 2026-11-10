@@ -1,0 +1,53 @@
+name: Build and Push to ECR (Pipeline C Shuffler)
+
+on:
+  push:
+    branches:
+      - main
+
+env:
+  AWS_REGION: "eu-central-1"
+  # CHANGED: Pointing to the new repository for the Pipeline C shuffler
+  ECR_REPOSITORY: "qgi-pipeline-c-pattern-inserter"
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write # Required for keyless authentication with AWS OIDC
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Configure AWS credentials
+        # WARNING: This uses a high-risk IAM user with static keys.
+        # This should be replaced with the secure OIDC role as soon as possible.
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v1
+
+      - name: Set up QEMU for multi-architecture builds
+        uses: docker/setup-qemu-action@v2
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v4
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:latest
+          # Building for both architectures ensures we can leverage cost-effective
+          # ARM-based Graviton instances in AWS Batch, just like Pipeline B.
+          platforms: linux/amd64,linux/arm64 
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

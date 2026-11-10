@@ -1,22 +1,20 @@
-# QGI 5.0 — Pipeline C: Pattern Synthesizer (AWS Lambda, 2025)
+# QGI 5.0 Component Archive — Pipeline C: AWS Lambda Pattern Synthesizer (qgi-pipeline-c-pattern-synthesizer, 2025)
 
-> [!IMPORTANT]
-> **Historical Archive (`QGI v5.0`):** This repository is part of **QGI 5.0** (the first-generation AWS cloud migration of Quantitative Geopolitical Intelligence). Active production development now resides in **QGI 7.0** at [`AminAlAit/qgi/tree/main/pipeline`](https://github.com/AminAlAit/qgi/tree/main/pipeline).
-
-## QGI Generational Lineage (`v1.0` → `v7.0`)
-
-| Generation | Period | Architecture & Milestone | Repository |
-|---|---|---|---|
-| **QGI 1.0** | Mar–Oct 2023 | Initial Pairwise Country Correlation Engine & Streamlit Prototype | `AminAlAit/trojan`, `AminAlAit/trojan-streamlit` |
-| **QGI 2.0** | Nov 2023 | Soft Power & Institutional Composite Index Prototype | `AminAlAit/trojan-2.0` |
-| **QGI 3.0** | Jan–Feb 2024 | Standalone Multi-Page Streamlit Analytical Terminal | [`AminAlAit/qgi-streamlit`](https://github.com/AminAlAit/qgi-streamlit) |
-| **QGI 4.0** | Feb–Sep 2025 | Local SCDI Formalization, MySQL→Parquet Engine (Pipelines A–E) & X Bot v1 | `AminAlAit/qgi-4.0` |
-| **QGI 5.0** | Sep 2025–Mar 2026 | First-Generation AWS Cloud Migration (Decoupled Lambda & Batch Microservices) | `AminAlAit/qgi-pipeline-a/b/c-*` |
-| **QGI 6.0** | Mar–Aug 2026 | 7-Repo Multi-Account AWS Cloud (14.3B FFT Correlations) & Trajectory Engine (42 Models) | `AminAlAit/qgi-{aws-tf,infra,pipeline,data,ml,frontend}` |
-| **QGI 7.0** | Oct 2026–Present | **Unified Public Monorepo & Sovereign IP Vault (Active Production)** | [`AminAlAit/qgi`](https://github.com/AminAlAit/qgi) & `AminAlAit/qgi-docs` |
+> **[Historical Component Archive — Consolidated into `AminAlAit/qgi-5.0`]**
+> This repository preserves the standalone component history of `AminAlAit/qgi-pipeline-c-pattern-synthesizer` from **QGI 5.0**.
+> - **Unified Generational Archive (QGI 5.0):** `AminAlAit/qgi-5.0` ($(System.Collections.Hashtable.Subdir))
+> - **Active Production Platform (QGI 7.0):** [**AminAlAit/qgi**](https://github.com/AminAlAit/qgi) ([qgintelligence.com](https://qgintelligence.com))
 
 ---
 
-## Architectural Role in QGI 5.0
+## QGI Generational Lineage (1.0 – 7.0)
 
-**Pipeline C (`qgi-pipeline-c-pattern-synthesizer`)** synthesized multi-indicator geopolitical and macroeconomic patterns from the SCDI outputs produced by Pipeline B, backed by a custom Pandas/PyArrow AWS Lambda layer (`layer-requirements.txt`).
+| Generation | Era | Canonical GitHub Repository | Original Repository Name(s) | Key Milestone |
+| :--- | :--- | :--- | :--- | :--- |
+| **QGI 1.0** | 2023 | `AminAlAit/qgi-1.0` | `trojan`, `trojan-streamlit` | Initial pairwise country correlation engine (countriesIndex.py, patternEngine.py) & first Streamlit prototype |
+| **QGI 2.0** | 2023 | `AminAlAit/qgi-2.0` | `trojan-2.0` | Poetry-managed Soft Power & composite institutional index prototype |
+| **QGI 3.0** | 2024 | `AminAlAit/qgi-3.0` | `qgi` (2024), `qgi-streamlit`, `qgi-local` | First public Quantitative Geopolitical Intelligence Streamlit prototype & World Bank notebook workflows |
+| **QGI 4.0** | 2025 | `AminAlAit/qgi-4.0` | `qgi-4.0` | Formalization of SCDI (Spearman + Cross-Correlation + DTW), local MySQL-to-Parquet engine (Pipelines A–E), and X Bot v1 |
+| **QGI 5.0** | 2025–2026 | `AminAlAit/qgi-5.0` | `qgi-pipeline-a-indicator-extractor`, `qgi-pipeline-b-scdi-finder`, `qgi-pipeline-c-pattern-synthesizer` | First AWS cloud migration: Serverless Lambda indicator extractor, Dockerized AWS Batch SCDI compute worker, and Lambda pattern synthesizer |
+| **QGI 6.0** | 2026 | `AminAlAit/qgi-6.0` | `qgi-aws-tf`, `qgi-infra`, `qgi-pipeline`, `qgi-data`, `qgi-ml`, `qgi-frontend`, `qgi-docs` | 7-repo multi-account AWS cloud architecture (14.3B FFT correlations), Trajectory Engine (42 event models), and Next.js 16 terminal |
+| **QGI 7.0 (Active)** | 2026–Present | [**AminAlAit/qgi**](https://github.com/AminAlAit/qgi) & `AminAlAit/qgi-docs` | `qgi`, `qgi-docs` | Unified polyglot production monorepo & live analytical terminal at [qgintelligence.com](https://qgintelligence.com) |
